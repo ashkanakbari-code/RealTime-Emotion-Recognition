@@ -1,0 +1,18 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Automatically downloaded runtime assets (Haar Cascade XML)
+haarcascade_frontalface_default.xml
+
+# IDE and Editor files
+.vscode/
+.idea/
+
+# OS specific files
+.DS_Store
