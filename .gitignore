@@ -7,6 +7,13 @@ __pycache__/
 venv/
 env/
 
+# Trained Model Weights 
+emotion_cnn_model.pth
+
+# Dataset folders
+train/
+test/
+
 # Automatically downloaded runtime assets (Haar Cascade XML)
 haarcascade_frontalface_default.xml
 
