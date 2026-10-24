@@ -9,11 +9,13 @@ BATCH_SIZE = 64
 EPOCHS = 15
 LEARINING_RATE = 0.001
 IMAGE_SIZE = (48, 48)
+MODEL_FILENAME = "emotion_cnn_model.pth"
 
 """
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Training on device: {device}")
 """
+
 device = torch.device("cpu")
 print("Using CPU for training.")
 
@@ -73,15 +75,22 @@ class EmotionCNN(nn.Module):
         return x
 
 model = EmotionCNN().to(device)
+if os.path.exists(MODEL_FILENAME):
+    model.load_state_dict(torch.load(MODEL_FILENAME, map_location=device))
+    print(f"Loaded existing weights from {MODEL_FILENAME}. Continuing training from previous state...")
+else:
+    print("No existing weights found. Training from scratch.")
+
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARINING_RATE)
 
 print("Starting training process...")
 for epoch in range(EPOCHS):
+    # --- TRAINING ---
     model.train()
     running_loss = 0.0
-    correct = 0
-    total = 0
+    correct_train = 0
+    total_train = 0
 
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
@@ -94,13 +103,34 @@ for epoch in range(EPOCHS):
 
         running_loss += loss.item()
         _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
+        total_train += labels.size(0)
+        correct_train += predicted.eq(labels).sum().item()
 
     epoch_loss = running_loss / len(train_loader)
-    epoch_acc = 100.0 * correct / total
-    print(f"Epoch [{epoch+1}/{EPOCHS}] | Loss: {epoch_loss:.4f} | Accuracy: {epoch_acc:.2f}%")
+    epoch_acc = 100.0 * correct_train / total_train
 
-model_filename = "emotion_cnn_model.pth"
-torch.save(model.state_dict(), model_filename)
-print(f"Model successfully trained and saved to {model_filename}")
+    # --- TESTING / VALIDATION ---
+    model.eval()
+    test_loss = 0.0
+    correct_test = 0
+    total_test = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+            test_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total_test += labels.size(0)
+            correct_test += predicted.eq(labels).sum().item()
+
+    test_epoch_loss = test_loss / len(test_loader)
+    test_epoch_acc = 100.0 * correct_test / total_test
+
+    print(f"Epoch [{epoch+1}/{EPOCHS}] | "
+          f"Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.2f}% || "
+          f"Test Loss: {test_epoch_loss:.4f} | Test Acc: {test_epoch_acc:.2f}%")
+
+torch.save(model.state_dict(), MODEL_FILENAME)
+print(f"Model successfully trained and saved to {MODEL_FILENAME}")
