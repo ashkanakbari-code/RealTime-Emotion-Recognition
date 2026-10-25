@@ -3,10 +3,10 @@ os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 import cv2
 import urllib.request
+import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import transforms
-import mediapipe as mp
 
 DEVICE = torch.device("cpu")
 MODEL_PATH = "emotion_cnn_model.pth"
@@ -46,11 +46,11 @@ class EmotionCNN(nn.Module):
 def ensure_haar_cascade_exists():
     cascade_filename = 'haarcascade_frontalface_default.xml'
     if not os.path.exists(cascade_filename):
-        print("Downloading Haar Cascade file...")
+        print("Downloading Haar Cascade XML file...")
         url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
         try:
             urllib.request.urlretrieve(url, cascade_filename)
-            print("Download completed successfully!")
+            print("Haar Cascade downloaded successfully!")
         except Exception as e:
             print(f"Error downloading cascade file: {e}")
     return cascade_filename
@@ -65,6 +65,21 @@ def start_emotion_detector():
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
     print("Model loaded successfully")
+
+    modelFile = "res10_300x300_ssd_iter_140000.caffemodel"
+    configFile = "deploy.prototxt.txt"
+
+    use_dnn = os.path.exists(modelFile) and os.path.exists(configFile)
+    net = None
+    face_cascade = None
+
+    if use_dnn:
+        net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
+        print("Using OpenCV DNN Face Detector.")
+    else:
+        print("DNN files not found. Falling back to robust Haar Cascade...")
+        cascade_path = ensure_haar_cascade_exists()
+        face_cascade = cv2.CascadeClassifier(cascade_path)
 
     transform_pipeline = transforms.Compose([
         transforms.ToPILImage(),
@@ -90,57 +105,60 @@ def start_emotion_detector():
         print("Error: Could not find any working webcam that streams frames.")
         return
 
-    mp_face_detection = mp.solutions.face_detection
+    print("Real-time emotion detector started. Press 'q' to exit.")
 
-    print("Real-time emotion detector with MediaPipe started. Press 'q' to exit.")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to grab frame.")
+            break
 
-    with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.6) as face_detection:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Error: Failed to grab frame.")
-                break
+        h, w, _ = frame.shape
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = []
 
-            h , w, _ = frame.shape
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_detection.process(rgb_frame)
-
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            if results.detections:
-                for detection in results.detections:
-                    bboxC = detection.location_data.relative_bounding_box
-                    x = int(bboxC.xmin * w)
-                    y = int(bboxC.ymin * h)
-                    box_w = int(bboxC.width * w)
-                    box_h = int(bboxC.height * h)
-
+        if use_dnn and net is not None:
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300), [104, 117, 123], False, False)
+            net.setInput(blob)
+            detections = net.forward()
+            for i in range(detections.shape[2]):
+                confidence_det = detections[0, 0, i, 2]
+                if confidence_det > 0.5:
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    (x, y, x2, y2) = box.astype("int")
                     x, y = max(0, x), max(0, y)
-                    x2, y2 = min(w, x + box_w), min(h, y + box_h)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    if x2 > x and y2 > y:
+                        faces.append((x, y, x2 - x, y2 - y))
+        else:
+            detected_faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            faces = [(x, y, w_box, h_box) for (x, y, w_box, h_box) in detected_faces]
 
-                    face_roi = gray_frame[y:y2, x:x2]
+        for (x, y, box_w, box_h) in faces:
+            x2, y2 = min(w, x + box_w), min(h, y + box_h)
+            face_roi = gray_frame[y:y2, x:x2]
 
-                    if face_roi.size > 0:
-                        try:
-                            tensor_face = transform_pipeline(face_roi).unsqueeze(0).to(DEVICE)
-                            with torch.no_grad():
-                                outputs = model(tensor_face)
-                                probabilities = torch.softmax(outputs, dim=1)
-                                confidence, predicted_idx = torch.max(probabilities, dim=1)
+            if face_roi.size > 0:
+                try:
+                    tensor_face = transform_pipeline(face_roi).unsqueeze(0).to(DEVICE)
+                    with torch.no_grad():
+                        outputs = model(tensor_face)
+                        probabilities = torch.softmax(outputs, dim=1)
+                        confidence, predicted_idx = torch.max(probabilities, dim=1)
 
-                                emotion_text = CLASSES[predicted_idx.item()]
-                                confidence_score = confidence.item() * 100
-                            
-                            label = f"{emotion_text} ({confidence_score:.1f}%)"
-                            cv2.rectangle(frame, (x, y), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(frame, label, (x, max(20, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-                        except Exception as e:
-                            pass
+                        emotion_text = CLASSES[predicted_idx.item()]
+                        confidence_score = confidence.item() * 100
+                    
+                    label = f"{emotion_text} ({confidence_score:.1f}%)"
+                    cv2.rectangle(frame, (x, y), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, label, (x, max(20, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+                except Exception as e:
+                    pass
 
-            cv2.imshow("Real-time Emotion Recognition (MediaPipe)", frame)
+        cv2.imshow("Real-time Emotion Recognition", frame)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
     cv2.destroyAllWindows()
