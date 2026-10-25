@@ -6,6 +6,7 @@ import urllib.request
 import torch
 import torch.nn as nn
 from torchvision import transforms
+import mediapipe as mp
 
 DEVICE = torch.device("cpu")
 MODEL_PATH = "emotion_cnn_model.pth"
@@ -89,53 +90,57 @@ def start_emotion_detector():
         print("Error: Could not find any working webcam that streams frames.")
         return
 
-    cascade_path = ensure_haar_cascade_exists()
-    face_cascade = cv2.CascadeClassifier(cascade_path)
+    mp_face_detection = mp.solutions.face_detection
 
-    if face_cascade.empty():
-        print("Error: Failed to load Haar Cascade classifier.")
-        return
+    print("Real-time emotion detector with MediaPipe started. Press 'q' to exit.")
 
-    print("Emotion detector started. Press 'q' to exit.")
+    with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.6) as face_detection:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Failed to grab frame.")
+                break
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Failed to grab frame.")
-            break
+            h , w, _ = frame.shape
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_detection.process(rgb_frame)
 
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        faces = face_cascade.detectMultiScale(
-            gray_frame,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(48, 48)
-        )
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        for (x, y, w, h) in faces:
-            face_roi = gray_frame[y:y+h, x:x+w]
+            if results.detections:
+                for detection in results.detections:
+                    bboxC = detection.location_data.relative_bounding_box
+                    x = int(bboxC.xmin * w)
+                    y = int(bboxC.ymin * h)
+                    box_w = int(bboxC.width * w)
+                    box_h = int(bboxC.height * h)
 
-            try:
-                tensor_face = transform_pipeline(face_roi).unsqueeze(0).to(DEVICE)
-                with torch.no_grad():
-                    outputs = model(tensor_face)
-                    probabilities = torch.softmax(outputs, dim=1)
-                    confidence, predicted_idx = torch.max(probabilities, dim=1)
+                    x, y = max(0, x), max(0, y)
+                    x2, y2 = min(w, x + box_w), min(h, y + box_h)
 
-                    emotion_text = CLASSES[predicted_idx.item()]
-                    confidence_score = confidence.item() * 100
-                
-                label = f"{emotion_text} ({confidence_score:.1f}%)"
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-            except Exception as e:
-                pass
+                    face_roi = gray_frame[y:y2, x:x2]
 
-        cv2.imshow("Real-time Emotion Recognition", frame)
+                    if face_roi.size > 0:
+                        try:
+                            tensor_face = transform_pipeline(face_roi).unsqueeze(0).to(DEVICE)
+                            with torch.no_grad():
+                                outputs = model(tensor_face)
+                                probabilities = torch.softmax(outputs, dim=1)
+                                confidence, predicted_idx = torch.max(probabilities, dim=1)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+                                emotion_text = CLASSES[predicted_idx.item()]
+                                confidence_score = confidence.item() * 100
+                            
+                            label = f"{emotion_text} ({confidence_score:.1f}%)"
+                            cv2.rectangle(frame, (x, y), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, label, (x, max(20, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+                        except Exception as e:
+                            pass
+
+            cv2.imshow("Real-time Emotion Recognition (MediaPipe)", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     cap.release()
     cv2.destroyAllWindows()
